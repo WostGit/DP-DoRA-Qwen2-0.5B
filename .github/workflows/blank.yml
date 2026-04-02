@@ -1,4 +1,4 @@
-name: "Fixed End-to-End DP Auto-Calibrating Pipeline"
+name: "DP-SGD Noise Level Comparison on Sensitive Data"
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-e2e-pipeline:
-    name: "Auto-Calibrate and Train"
+  compare-noise-levels:
+    name: "Compare Rényi vs Proactive Noise"
     runs-on: macos-latest
 
     steps:
@@ -19,53 +19,42 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: "Step 2: Install Libraries"
-        run: |
-          pip install --upgrade pip
-          pip install numpy opacus
+      - name: "Step 2: Install NumPy"
+        run: pip install numpy
 
-      - name: "Step 3: Run Auto-Calibrated Pipeline"
+      - name: "Step 3: Run Comparison"
         run: |
           python -c "
           import numpy as np
-          import math
-          # Bulletproof import for modern Opacus
-          from opacus.accountants.utils import get_noise_multiplier
 
           np.random.seed(42)
 
-          print('================================================================')
-          print('⚖️ PART 1: TRUE DP AUTO-CALIBRATION')
-          print('================================================================')
+          # ================================================================
+          # 🏥 SIMULATED SENSITIVE DATASET
+          # ================================================================
+          # Imagine 4 patients with specific medical biomarker readings
+          # Feature 1: Blood pressure deviation, Feature 2: Cholesterol level
+          # Target: Likelihood of a specific diagnosis (0.0 to 1.0)
           
-          TARGET_EPSILON = 3.0
-          TARGET_DELTA = 1e-5
-          STEPS = 500
-          SAMPLE_RATE = 0.05
+          X_sensitive = np.array([
+              [1.2, 3.4],   # Patient A
+              [-0.5, 0.2],  # Patient B
+              [4.5, -2.1],  # Patient C (Severe outlier)
+              [-2.2, -1.1]  # Patient D
+          ])
           
-          # Using get_noise_multiplier instead of compute_noise_multiplier
-          SIGMA = get_noise_multiplier(
-              target_epsilon=TARGET_EPSILON,
-              target_delta=TARGET_DELTA,
-              sample_rate=SAMPLE_RATE,
-              steps=STEPS
-          )
-          
-          print(f'[INPUT] Target Epsilon: {TARGET_EPSILON}')
-          print(f'[INPUT] Target Delta: {TARGET_DELTA}')
-          print(f'[INPUT] Total Steps: {STEPS}')
-          print(f'[OPACUS] Solved exact required Noise Scale (Sigma): {SIGMA:.6f}\n')
+          y_sensitive = np.array([[0.8], [0.1], [0.95], [0.05]])
 
           # ================================================================
-          # 📦 THE REUSABLE DP-SGD OPTIMIZER FUNCTION
+          # 📦 THE DP-SGD FUNCTION
           # ================================================================
-          def apply_dp_gradients(weights, X_batch, y_batch, clip_norm, sigma, lr):
-              batch_size = X_batch.shape[0]
+          def apply_dp_gradients(weights, X, y, clip_norm, sigma, lr):
+              batch_size = X.shape[0]
               per_sample_grads = []
               
               for i in range(batch_size):
-                  x_i = X_batch[i:i+1]
-                  y_i = y_batch[i:i+1]
+                  x_i = X[i:i+1]
+                  y_i = y[i:i+1]
                   y_pred = np.dot(x_i, weights)
                   grad = 2 * x_i.T * (y_pred - y_i)
                   per_sample_grads.append(grad)
@@ -77,44 +66,53 @@ jobs:
                   clipped_grads.append(grad * factor)
                   
               avg_grad = np.mean(clipped_grads, axis=0)
+              
+              # Generate noise
               noise_scale = (sigma * clip_norm) / batch_size
               noise = np.random.normal(0, noise_scale, avg_grad.shape)
               
               noisy_grad = avg_grad + noise
               updated_weights = weights - (lr * noisy_grad)
-              return updated_weights
+              
+              return updated_weights, avg_grad, noise
 
           # ================================================================
-          # 🚀 PART 2: LIVE MULTI-STEP TRAINING
+          # 🧪 RUNNING THE COMPARISON
           # ================================================================
-          
           CLIP_NORM = 1.0
           LEARNING_RATE = 0.05
-          BATCH_SIZE = 4
-          EPOCHS = 3
-
-          model_weights = np.zeros((2, 1))
+          
+          # The two calculated noise scales from our previous tests
+          RENYI_SIGMA = 1.8847
+          PROACTIVE_SIGMA = 35.7661
 
           print('================================================================')
-          print('🔬 PART 2: MULTI-STEP DP-SGD TRAINING WITH PRECISE NOISE')
+          print('🔬 RUNNING TEST A: RÉNYI DP (OPACUS STYLE) - SIGMA = 1.8847')
           print('================================================================')
-          print(f'Hyperparameters: Sigma={SIGMA:.4f}, Clip={CLIP_NORM}, LR={LEARNING_RATE}\n')
-
-          for epoch in range(EPOCHS):
-              print(f'--- 🏁 EPOCH {epoch + 1} ---')
-              
-              X_batch = np.random.uniform(-5.0, 5.0, (BATCH_SIZE, 2))
-              y_batch = np.random.uniform(-1.0, 1.0, (BATCH_SIZE, 1))
-              
-              model_weights = apply_dp_gradients(
-                  model_weights, X_batch, y_batch, CLIP_NORM, SIGMA, LEARNING_RATE
+          
+          weights_renyi = np.zeros((2, 1))
+          
+          for epoch in range(3):
+              weights_renyi, clean_g, noise = apply_dp_gradients(
+                  weights_renyi, X_sensitive, y_sensitive, CLIP_NORM, RENYI_SIGMA, LEARNING_RATE
               )
-              
-              print(f'  [LOG] Weights after update:\n{model_weights.flatten()}')
-              print(f'  [LOG] Gradient norms safely bounded by max {CLIP_NORM}\n')
+              print(f'Epoch {epoch+1} Weights: {weights_renyi.flatten()}')
 
+          print('\n================================================================')
+          print('🔬 RUNNING TEST B: PROACTIVE PURE DP - SIGMA = 35.7661')
           print('================================================================')
-          print('🏆 TRUE E2E PIPELINE SUCCESS')
+          
+          weights_proactive = np.zeros((2, 1))
+          
+          for epoch in range(3):
+              weights_proactive, clean_g, noise = apply_dp_gradients(
+                  weights_proactive, X_sensitive, y_sensitive, CLIP_NORM, PROACTIVE_SIGMA, LEARNING_RATE
+              )
+              print(f'Epoch {epoch+1} Weights: {weights_proactive.flatten()}')
+
+          print('\n================================================================')
+          print('🏆 FINAL COMPARISON')
           print('================================================================')
-          print(f'Final Trained Weights:\n{model_weights}')
+          print(f'Rényi Final Weights:     {weights_renyi.flatten()}')
+          print(f'Proactive Final Weights: {weights_proactive.flatten()}')
           "

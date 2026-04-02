@@ -1,4 +1,4 @@
-name: "Dual DP Accountant Stress-Test"
+name: "Dual DP Accountant Stress-Test - Fixed Domain"
 
 on:
   push:
@@ -49,23 +49,22 @@ jobs:
                   return float('nan')
               
               # Optimal order alpha usually hovers around 2 to 20 for LLMs. 
-              # We will optimize for alpha = 10 for this simulation.
+              # We will optimize for alpha = 10.0 for this simulation.
               alpha = 10.0
               
               # Subsampling amplification: Noise is scaled down because we don't look at all data at once
               effective_steps = steps * (q ** 2)
               
-              # Rényi privacy loss calculation
-              rdp_epsilon = effective_steps * alpha / 2.0
+              # Calculating the denominator for the square root
+              denominator = epsilon - (math.log(1 / delta) / (alpha - 1))
               
-              # Converting RDP back to standard (epsilon, delta) DP
-              # Formula: epsilon = rdp_epsilon + log(1/delta) / (alpha - 1)
-              required_sigma = math.sqrt((alpha * effective_steps) / (2 * (epsilon - (math.log(1 / delta) / (alpha - 1)))))
-              
-              # If the subtraction yields a negative domain, RDP cannot find a valid small sigma.
-              if required_sigma <= 0 or math.isnan(required_sigma):
-                  return proactive_calculator(epsilon, delta, steps) * 0.5 # Fallback to a tighter estimate
+              # FIXED: If the denominator is zero or negative, a valid sigma cannot be found for alpha=10
+              # To prevent the 'math domain error', we fall back to a tighter analytical bound.
+              if denominator <= 0:
+                  fallback_sigma = math.sqrt(2 * effective_steps * math.log(1 / delta)) / epsilon
+                  return fallback_sigma
                   
+              required_sigma = math.sqrt((alpha * effective_steps) / (2 * denominator))
               return required_sigma
 
           # ================================================================

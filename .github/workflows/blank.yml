@@ -1,4 +1,4 @@
-name: DP-DoRA Qwen2-0.5B M1 Test Run
+name: "Comprehensive Ultra-Verbose DP-DoRA Qwen2-0.5B M1 Execution Test"
 
 on:
   push:
@@ -6,97 +6,184 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-dp-dora-simulation:
-    runs-on: macos-latest  # Targets Apple Silicon runners for M1 testing
+  execute-dp-dora-and-backward-pass:
+    name: "Initialize and Run Live Backward Pass on Apple Silicon"
+    runs-on: macos-latest  # Targets GitHub's macOS runners (simulating Apple Silicon architecture)
 
     steps:
-      - name: Checkout Code
+      - name: "Step 0: Source Code Extraction and Checkout"
         uses: actions/checkout@v4
+        description: "Pulls the latest repository code into the secure runner workspace environment."
 
-      - name: Set up Python
+      - name: "Step 1: Python Runtime Environment Setup"
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+        description: "Establishes an isolated Python 3.11 environment to avoid dependency collision."
 
-      - name: Install AI & Privacy Dependencies
+      - name: "Step 2: Install Advanced Machine Learning & Privacy Libraries"
         run: |
+          echo "Updating pip and installing heavy transformer and privacy libraries..."
+          pip install --upgrade pip
           pip install torch transformers peft opacus datasets accelerate
+        description: "Fetches and compiles PyTorch (engine), Transformers (Qwen2), PEFT (DoRA), and Opacus (Differential Privacy)."
 
-      - name: Step 1 - Act as the Proactive DP Calculator
+      - name: "Step 3: Execute Proactive DP Calculator Math"
         id: calculator
         run: |
           python -c "
           import math
+          import sys
           
-          # Target Privacy Budget
-          epsilon = 3.0
-          delta = 1e-5
-          steps = 500
+          print('--- INITIATING PROACTIVE DP CALCULATOR ---')
+          # Define the target mathematical parameters for Differential Privacy
+          epsilon = 3.0  # The privacy budget. Lower means stronger privacy but more noise.
+          delta = 1e-5   # The probability of privacy breach failure.
+          steps = 500    # Total anticipated communication rounds or training steps.
           
-          # Extrapolating Van Dijk's tight bound approximation
+          print(f'Target Privacy Budget (Epsilon): {epsilon}')
+          print(f'Privacy Failure Probability (Delta): {delta}')
+          print(f'Total Planned Steps (T): {steps}')
+          
+          # Extrapolating a tight analytical bound approximation for DP-SGD.
+          # This determines the exact amount of Gaussian noise required to preserve privacy.
           sigma = math.sqrt(2 * steps * math.log(1 / delta)) / epsilon
           
+          # Setting standard output for GitHub Actions environment variable capture
           print(f'::set-output name=sigma::{round(sigma, 3)}')
-          print(f'Calculated optimal DP noise scale for DoRA: {round(sigma, 3)}')
+          print('-----------------------------------------')
+          print(f'CALCULATION COMPLETE: The optimal DP noise scale for DoRA is: {round(sigma, 3)}')
+          print('-----------------------------------------')
           "
 
-      - name: Step 2 - Execute the DP-DoRA Training Test
+      - name: "Step 4: Load Model, Inject DoRA, and Execute Live Backward Pass"
         env:
           SIGMA: ${{ steps.calculator.outputs.sigma }}
         run: |
           python -c "
           import os
+          import sys
           import torch
           from torch.utils.data import DataLoader
           from transformers import AutoModelForCausalLM, AutoTokenizer
           from peft import LoraConfig, get_peft_model
           from opacus import PrivacyEngine
           
-          print('--- Step A: Loading Qwen2-0.5B onto Apple Silicon (MPS) ---')
+          print('================================================================')
+          print('STAGE A: ENVIRONMENT INITIALIZATION & MODEL LOADING')
+          print('================================================================')
+          
+          # Suppress redundant Hugging Face warnings for clean output logs
+          os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
+          
           model_name = 'Qwen/Qwen2-0.5B'
+          print(f'Querying Hugging Face Hub for: {model_name}')
+          
           tokenizer = AutoTokenizer.from_pretrained(model_name)
+          
+          # Loading the heavy model weights directly into the Apple Metal Performance Shaders (MPS) backend
+          print('Mapping model tensors to Apple Silicon MPS memory pool...')
           model = AutoModelForCausalLM.from_pretrained(model_name).to('mps')
           
-          print('--- Step B: Injecting DoRA Adapters ---')
+          print('Model successfully stored in localized unified memory.')
+          
+          print('\n================================================================')
+          print('STAGE B: REPARAMETERIZATION VIA DORA ADAPTERS')
+          print('================================================================')
+          
+          # Weight-Decomposed Low-Rank Adaptation (DoRA) isolates magnitude and direction
           peft_config = LoraConfig(
               r=8,
               lora_alpha=16,
               target_modules=['q_proj', 'v_proj'],
-              use_dora=True  # ACTIVATES DORA!
+              use_dora=True  # STRICTLY ACTIVATES DORA OVER STANDARD LORA
           )
+          
+          print('Injecting low-rank adapters and applying non-linear magnitude splits...')
           model = get_peft_model(model, peft_config)
+          
+          print('Printing trainable parameter distribution:')
           model.print_trainable_parameters()
           
-          print('--- Step C: Initializing Proactive DP Engine ---')
-          sigma = float(os.getenv('SIGMA', '15.0'))
-          print(f'Applying calculated noise scale: {sigma}')
+          print('\n================================================================')
+          print('STAGE C: DIFFERENTIAL PRIVACY HOOK REGISTRATION')
+          print('================================================================')
           
+          # Extracting our proactively computed noise scale from the environment
+          sigma = float(os.getenv('SIGMA', '15.0'))
+          print(f'Pulled calculated noise scale from Step 3: {sigma}')
+          
+          # Initializing AdamW optimizer strictly mapped to the trainable DoRA parameters
           optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
           
-          # FIX: Generate proper tensor dataset instead of a raw python list
-          dummy_data = [
-              tokenizer('Hello, world! This is a test of DP-DoRA on M1.', return_tensors='pt')['input_ids'].squeeze(0).to('mps')
-              for _ in range(10)
-          ]
+          print('Synthesizing dummy tensor dataset for causal language modeling test...')
+          # We create fixed integer sequences bound by the vocabulary size of Qwen
+          dummy_input_ids = torch.randint(low=0, high=150000, size=(10, 32)).to('mps')
           
-          # FIX: Wrap in a proper PyTorch DataLoader for Opacus
-          train_loader = DataLoader(dummy_data, batch_size=2)
+          # Wrapping the raw tensors in a dedicated PyTorch DataLoader
+          train_loader = DataLoader(dummy_input_ids, batch_size=2)
+          print('PyTorch DataLoader established with a batch size of 2.')
           
+          # Instantiating the Differential Privacy Engine
           privacy_engine = PrivacyEngine()
           
+          print('Attempting to lock Opacus hooks onto DoRA weight matrices...')
           try:
               model, optimizer, train_loader = privacy_engine.make_private(
                   module=model,
                   optimizer=optimizer,
                   data_loader=train_loader,
                   noise_multiplier=sigma,
-                  max_grad_norm=1.0  # Sensitivity bound C
+                  max_grad_norm=1.0  # Enforcing sensitivity upper bound (C)
               )
-              print('\n[SUCCESS] Extrapolated DP-DoRA hooked successfully on M1!')
+              print('[CRITICAL SUCCESS] DP-SGD Hooks attached smoothly to the DoRA layers!')
           except Exception as e:
-              print(f'\n[ERROR] Hook failed: {e}')
+              print(f'[CRITICAL ERROR] Hook mapping phase collapsed: {e}')
+              sys.exit(1)
+              
+          print('\n================================================================')
+          print('STAGE D: THE CRITICAL CRUCIBLE - LIVE BACKWARD PASS EXECUTION')
+          print('================================================================')
+          
+          model.train()
+          print('Model set to train() mode. Gradients are now unlocked.')
+          
+          for batch_idx, batch_tensors in enumerate(train_loader):
+              print(f'Processing Micro-Batch #{batch_idx + 1}...')
+              
+              # Clear gradients from the previous accumulation (if any)
+              optimizer.zero_grad()
+              
+              print('-> Computing forward pass through massive attention blocks...')
+              # In Causal LM, labels are typically shifted versions of the input, but passing the same tensor computes loss fine
+              outputs = model(batch_tensors, labels=batch_tensors)
+              loss = outputs.loss
+              print(f'-> Current Batch Cross-Entropy Loss: {loss.item():.4f}')
+              
+              print('-> Triggering massive chain rule derivative computation (loss.backward())...')
+              try:
+                  loss.backward()
+                  print('-> Applying noise and performing optimizer step update...')
+                  optimizer.step()
+                  
+                  print('\n################################################################')
+                  print('🔥 MASSIVE SUCCESS! THE MATH HOLDS!')
+                  print('Opacus successfully computed per-sample gradients across')
+                  print('the weight-decomposed non-linear operations of DoRA.')
+                  print('################################################################')
+                  break  # We only need to prove a single step works to validate the graph!
+                  
+              except Exception as e:
+                  print('\n################################################################')
+                  print('💥 EXECUTION CRASHED IN BACKWARD PASS!')
+                  print('The automatic differentiation engine could not compute per-sample')
+                  print('gradients through the split DoRA magnitude/direction matrices.')
+                  print(f'Error Trace: {e}')
+                  print('################################################################')
+                  sys.exit(1)
           "
 
-      - name: Step 3 - Final Output and Reality Check
+      - name: "Step 5: Process Completion Diagnostics"
         run: |
-          echo "Test Complete."
+          echo "Process finished."
+          echo "Check the logs of Stage D to observe whether Opacus successfully traversed DoRA."

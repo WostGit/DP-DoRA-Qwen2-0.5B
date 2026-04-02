@@ -1,4 +1,4 @@
-name: "True End-to-End DP Auto-Calibrating Pipeline"
+name: "Fixed End-to-End DP Auto-Calibrating Pipeline"
 
 on:
   push:
@@ -29,7 +29,8 @@ jobs:
           python -c "
           import numpy as np
           import math
-          from opacus.accountants.utils import compute_noise_multiplier
+          # Bulletproof import for modern Opacus
+          from opacus.accountants.utils import get_noise_multiplier
 
           np.random.seed(42)
 
@@ -37,18 +38,16 @@ jobs:
           print('⚖️ PART 1: TRUE DP AUTO-CALIBRATION')
           print('================================================================')
           
-          # Real-world training parameters
           TARGET_EPSILON = 3.0
           TARGET_DELTA = 1e-5
           STEPS = 500
           SAMPLE_RATE = 0.05
           
-          # Opacus natively solves for the perfect sigma to reach our exact epsilon
-          SIGMA = compute_noise_multiplier(
+          # Using get_noise_multiplier instead of compute_noise_multiplier
+          SIGMA = get_noise_multiplier(
               target_epsilon=TARGET_EPSILON,
               target_delta=TARGET_DELTA,
               sample_rate=SAMPLE_RATE,
-              epochs=1, # Setting to 1 because we are giving total explicit steps
               steps=STEPS
           )
           
@@ -64,7 +63,6 @@ jobs:
               batch_size = X_batch.shape[0]
               per_sample_grads = []
               
-              # 1. Compute per-sample gradients
               for i in range(batch_size):
                   x_i = X_batch[i:i+1]
                   y_i = y_batch[i:i+1]
@@ -72,21 +70,17 @@ jobs:
                   grad = 2 * x_i.T * (y_pred - y_i)
                   per_sample_grads.append(grad)
                   
-              # 2. Per-sample clipping
               clipped_grads = []
               for grad in per_sample_grads:
                   norm = np.linalg.norm(grad)
                   factor = min(1.0, clip_norm / (norm + 1e-8))
                   clipped_grads.append(grad * factor)
                   
-              # 3. Average and add noise
               avg_grad = np.mean(clipped_grads, axis=0)
               noise_scale = (sigma * clip_norm) / batch_size
               noise = np.random.normal(0, noise_scale, avg_grad.shape)
               
               noisy_grad = avg_grad + noise
-              
-              # 4. Weight update
               updated_weights = weights - (lr * noisy_grad)
               return updated_weights
 
@@ -99,7 +93,6 @@ jobs:
           BATCH_SIZE = 4
           EPOCHS = 3
 
-          # Initialize dummy model weights
           model_weights = np.zeros((2, 1))
 
           print('================================================================')

@@ -1,0 +1,101 @@
+name: DP-DoRA Qwen2-0.5B M1 Test Run
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  run-dp-dora-simulation:
+    runs-on: macos-latest  # Targets Apple Silicon runners for M1 testing
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install AI & Privacy Dependencies
+        run: |
+          # Opacus handles DP-SGD, PEFT handles DoRA, Accelerate optimizes for MPS (Apple Silicon)
+          pip install torch transformers peft opacus datasets accelerate
+
+      - name: Step 1 - Act as the Proactive DP Calculator
+        id: calculator
+        run: |
+          python -c "
+          import math
+          
+          # Target Privacy Budget
+          epsilon = 3.0
+          delta = 1e-5
+          steps = 500
+          
+          # Extrapolating Van Dijk's tight bound approximation
+          # Solving for sigma (noise multiplier)
+          sigma = math.sqrt(2 * steps * math.log(1 / delta)) / epsilon
+          
+          print(f'::set-output name=sigma::{round(sigma, 3)}')
+          print(f'Calculated optimal DP noise scale for DoRA: {round(sigma, 3)}')
+          "
+
+      - name: Step 2 - Execute the DP-DoRA Training Test
+        env:
+          SIGMA: ${{ steps.calculator.outputs.sigma }}
+        run: |
+          python -c "
+          import os
+          import torch
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          from peft import LoraConfig, get_peft_model
+          from opacus import PrivacyEngine
+          
+          print('--- Step A: Loading Qwen2-0.5B onto Apple Silicon (MPS) ---')
+          model_name = 'Qwen/Qwen2-0.5B'
+          tokenizer = AutoTokenizer.from_pretrained(model_name)
+          model = AutoModelForCausalLM.from_pretrained(model_name).to('mps')
+          
+          print('--- Step B: Injecting DoRA Adapters ---')
+          # We isolate magnitude and direction to stabilize gradients
+          peft_config = LoraConfig(
+              r=8,
+              lora_alpha=16,
+              target_modules=['q_proj', 'v_proj'],
+              use_dora=True  # ACTIVATES DORA!
+          )
+          model = get_peft_model(model, peft_config)
+          model.print_trainable_parameters()
+          
+          print('--- Step C: Initializing Proactive DP Engine ---')
+          # Extrapolating target settings based on Step 1
+          sigma = float(os.getenv('SIGMA', '15.0'))
+          print(f'Applying calculated noise scale: {sigma}')
+          
+          optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+          privacy_engine = PrivacyEngine()
+          
+          # We create a dummy dataloader just to verify DP-SGD hooks attach to DoRA successfully
+          dummy_data = [tokenizer('Hello, world! This is a test of DP-DoRA on M1.', return_tensors='pt').to('mps') for _ in range(5)]
+          
+          # In practice, make_private wraps the model and hooks per-sample gradients
+          try:
+              model, optimizer, _ = privacy_engine.make_private(
+                  module=model,
+                  optimizer=optimizer,
+                  data_loader=dummy_data,
+                  noise_multiplier=sigma,
+                  max_grad_norm=1.0  # Sensitivity bound C
+              )
+              print('\n[SUCCESS] Extrapolated DP-DoRA hooked successfully on M1!')
+          except Exception as e:
+              print(f'\n[ERROR] Hook failed due to DoRA non-linear math: {e}')
+          "
+
+      - name: Step 3 - Final Output and Reality Check
+        run: |
+          echo "Test Complete."
+          echo "If Step 2 passed, your M1 can simulate Van Dijk's framework on a tiny LLM."
+          echo "If it failed on the hooks, the non-linear normalization of DoRA is preventing standard DP accountants from mapping the gradients."

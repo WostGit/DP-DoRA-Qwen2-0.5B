@@ -1,4 +1,4 @@
-name: "Complete DP Accountant and Model Training Pipeline"
+name: "True End-to-End DP Auto-Calibrating Pipeline"
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-complete-pipeline:
-    name: "Accountant and Multi-Step Trainer"
+  run-e2e-pipeline:
+    name: "Auto-Calibrate and Train"
     runs-on: macos-latest
 
     steps:
@@ -24,38 +24,38 @@ jobs:
           pip install --upgrade pip
           pip install numpy opacus
 
-      - name: "Step 3: Run Full Accountant and Trainer"
+      - name: "Step 3: Run Auto-Calibrated Pipeline"
         run: |
           python -c "
           import numpy as np
           import math
-          from opacus.accountants import RDPAccountant
+          from opacus.accountants.utils import compute_noise_multiplier
 
           np.random.seed(42)
 
           print('================================================================')
-          print('⚖️ PART 1: PRODUCTION RÉNYI DP ACCOUNTING')
+          print('⚖️ PART 1: TRUE DP AUTO-CALIBRATION')
           print('================================================================')
           
-          # Target parameters
+          # Real-world training parameters
           TARGET_EPSILON = 3.0
           TARGET_DELTA = 1e-5
           STEPS = 500
           SAMPLE_RATE = 0.05
           
-          # Use Opacus to find the precise noise scale
-          accountant = RDPAccountant()
-          for _ in range(STEPS):
-              accountant.step(noise_multiplier=1.0, sample_rate=SAMPLE_RATE)
-          
-          current_epsilon = accountant.get_epsilon(delta=TARGET_DELTA)
-          
-          # Extrapolate required sigma for target epsilon
-          SIGMA = current_epsilon / TARGET_EPSILON
+          # Opacus natively solves for the perfect sigma to reach our exact epsilon
+          SIGMA = compute_noise_multiplier(
+              target_epsilon=TARGET_EPSILON,
+              target_delta=TARGET_DELTA,
+              sample_rate=SAMPLE_RATE,
+              epochs=1, # Setting to 1 because we are giving total explicit steps
+              steps=STEPS
+          )
           
           print(f'[INPUT] Target Epsilon: {TARGET_EPSILON}')
           print(f'[INPUT] Target Delta: {TARGET_DELTA}')
-          print(f'[OPACUS] Dynamically solved optimal Noise Scale (Sigma): {SIGMA:.4f}\n')
+          print(f'[INPUT] Total Steps: {STEPS}')
+          print(f'[OPACUS] Solved exact required Noise Scale (Sigma): {SIGMA:.6f}\n')
 
           # ================================================================
           # 📦 THE REUSABLE DP-SGD OPTIMIZER FUNCTION
@@ -91,7 +91,7 @@ jobs:
               return updated_weights
 
           # ================================================================
-          # 🚀 PART 2: MULTI-STEP DP-SGD TRAINING SIMULATION
+          # 🚀 PART 2: LIVE MULTI-STEP TRAINING
           # ================================================================
           
           CLIP_NORM = 1.0
@@ -103,7 +103,7 @@ jobs:
           model_weights = np.zeros((2, 1))
 
           print('================================================================')
-          print('🔬 PART 2: MULTI-STEP DP-SGD TRAINING SIMULATION')
+          print('🔬 PART 2: MULTI-STEP DP-SGD TRAINING WITH PRECISE NOISE')
           print('================================================================')
           print(f'Hyperparameters: Sigma={SIGMA:.4f}, Clip={CLIP_NORM}, LR={LEARNING_RATE}\n')
 
@@ -121,7 +121,7 @@ jobs:
               print(f'  [LOG] Gradient norms safely bounded by max {CLIP_NORM}\n')
 
           print('================================================================')
-          print('🏆 COMPLETE PIPELINE SUCCESS')
+          print('🏆 TRUE E2E PIPELINE SUCCESS')
           print('================================================================')
           print(f'Final Trained Weights:\n{model_weights}')
           "

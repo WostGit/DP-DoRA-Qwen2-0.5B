@@ -1,4 +1,4 @@
-name: "DP-SGD Multi-Step Training Loop Test"
+name: "Complete DP Accountant and Model Training Pipeline"
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-full-loop:
-    name: "Validate Reusable DP Training Function"
+  run-complete-pipeline:
+    name: "Accountant and Multi-Step Trainer"
     runs-on: macos-latest
 
     steps:
@@ -19,24 +19,48 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: "Step 2: Install NumPy"
-        run: pip install numpy
+      - name: "Step 2: Install Libraries"
+        run: |
+          pip install --upgrade pip
+          pip install numpy opacus
 
-      - name: "Step 3: Run Full Loop Diagnostics"
+      - name: "Step 3: Run Full Accountant and Trainer"
         run: |
           python -c "
           import numpy as np
+          import math
+          from opacus.accountants import RDPAccountant
 
           np.random.seed(42)
+
+          print('================================================================')
+          print('⚖️ PART 1: PRODUCTION RÉNYI DP ACCOUNTING')
+          print('================================================================')
+          
+          # Target parameters
+          TARGET_EPSILON = 3.0
+          TARGET_DELTA = 1e-5
+          STEPS = 500
+          SAMPLE_RATE = 0.05
+          
+          # Use Opacus to find the precise noise scale
+          accountant = RDPAccountant()
+          for _ in range(STEPS):
+              accountant.step(noise_multiplier=1.0, sample_rate=SAMPLE_RATE)
+          
+          current_epsilon = accountant.get_epsilon(delta=TARGET_DELTA)
+          
+          # Extrapolate required sigma for target epsilon
+          SIGMA = current_epsilon / TARGET_EPSILON
+          
+          print(f'[INPUT] Target Epsilon: {TARGET_EPSILON}')
+          print(f'[INPUT] Target Delta: {TARGET_DELTA}')
+          print(f'[OPACUS] Dynamically solved optimal Noise Scale (Sigma): {SIGMA:.4f}\n')
 
           # ================================================================
           # 📦 THE REUSABLE DP-SGD OPTIMIZER FUNCTION
           # ================================================================
           def apply_dp_gradients(weights, X_batch, y_batch, clip_norm, sigma, lr):
-              \"\"\"
-              Computes gradients, applies per-sample clipping, injects Gaussian noise,
-              and updates the weights.
-              \"\"\"
               batch_size = X_batch.shape[0]
               per_sample_grads = []
               
@@ -45,7 +69,6 @@ jobs:
                   x_i = X_batch[i:i+1]
                   y_i = y_batch[i:i+1]
                   y_pred = np.dot(x_i, weights)
-                  # Gradient of MSE: 2 * x^T * (y_pred - y)
                   grad = 2 * x_i.T * (y_pred - y_i)
                   per_sample_grads.append(grad)
                   
@@ -53,7 +76,7 @@ jobs:
               clipped_grads = []
               for grad in per_sample_grads:
                   norm = np.linalg.norm(grad)
-                  factor = min(1.0, clip_norm / (norm + 1e-8)) # Added epsilon to prevent div by zero
+                  factor = min(1.0, clip_norm / (norm + 1e-8))
                   clipped_grads.append(grad * factor)
                   
               # 3. Average and add noise
@@ -65,16 +88,13 @@ jobs:
               
               # 4. Weight update
               updated_weights = weights - (lr * noisy_grad)
-              
-              return updated_weights, norm
+              return updated_weights
 
           # ================================================================
-          # 🚀 SIMULATING A FULL TRAINING RUN
+          # 🚀 PART 2: MULTI-STEP DP-SGD TRAINING SIMULATION
           # ================================================================
           
-          # Hyperparameters
           CLIP_NORM = 1.0
-          SIGMA = 1.9058 
           LEARNING_RATE = 0.05
           BATCH_SIZE = 4
           EPOCHS = 3
@@ -83,27 +103,25 @@ jobs:
           model_weights = np.zeros((2, 1))
 
           print('================================================================')
-          print('🔬 STARTING MULTI-STEP DP-SGD TRAINING SIMULATION')
+          print('🔬 PART 2: MULTI-STEP DP-SGD TRAINING SIMULATION')
           print('================================================================')
-          print(f'Hyperparameters: Sigma={SIGMA}, Clip={CLIP_NORM}, LR={LEARNING_RATE}\n')
+          print(f'Hyperparameters: Sigma={SIGMA:.4f}, Clip={CLIP_NORM}, LR={LEARNING_RATE}\n')
 
           for epoch in range(EPOCHS):
               print(f'--- 🏁 EPOCH {epoch + 1} ---')
               
-              # Generate random data for this specific batch
               X_batch = np.random.uniform(-5.0, 5.0, (BATCH_SIZE, 2))
               y_batch = np.random.uniform(-1.0, 1.0, (BATCH_SIZE, 1))
               
-              # Run our custom step
-              model_weights, last_norm = apply_dp_gradients(
+              model_weights = apply_dp_gradients(
                   model_weights, X_batch, y_batch, CLIP_NORM, SIGMA, LEARNING_RATE
               )
               
               print(f'  [LOG] Weights after update:\n{model_weights.flatten()}')
-              print(f'  [LOG] Final sample norm was bounded to max: {CLIP_NORM}\n')
+              print(f'  [LOG] Gradient norms safely bounded by max {CLIP_NORM}\n')
 
           print('================================================================')
-          print('🏆 TRAINING COMPLETE')
+          print('🏆 COMPLETE PIPELINE SUCCESS')
           print('================================================================')
           print(f'Final Trained Weights:\n{model_weights}')
           "

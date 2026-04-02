@@ -13,20 +13,20 @@ jobs:
     steps:
       - name: "Step 0: Source Code Extraction and Checkout"
         uses: actions/checkout@v4
-        description: "Pulls the latest repository code into the secure runner workspace environment."
+        # Pulls the latest repository code into the secure runner workspace environment.
 
       - name: "Step 1: Python Runtime Environment Setup"
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-        description: "Establishes an isolated Python 3.11 environment to avoid dependency collision."
+        # Establishes an isolated Python 3.11 environment to avoid dependency collision.
 
       - name: "Step 2: Install Advanced Machine Learning & Privacy Libraries"
         run: |
           echo "Updating pip and installing heavy transformer and privacy libraries..."
           pip install --upgrade pip
           pip install torch transformers peft opacus datasets accelerate
-        description: "Fetches and compiles PyTorch (engine), Transformers (Qwen2), PEFT (DoRA), and Opacus (Differential Privacy)."
+        # Fetches and compiles PyTorch (engine), Transformers (Qwen2), PEFT (DoRA), and Opacus (Differential Privacy).
 
       - name: "Step 3: Execute Proactive DP Calculator Math"
         id: calculator

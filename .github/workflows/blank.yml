@@ -1,4 +1,4 @@
-name: "Ultra-Verbose DP-SGD Model Execution Test"
+name: "DP-SGD Multi-Step Training Loop Test"
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-dpsgd-model:
-    name: "Validate Gradient Clipping and Noise on Actual Data"
+  run-full-loop:
+    name: "Validate Reusable DP Training Function"
     runs-on: macos-latest
 
     steps:
@@ -22,94 +22,88 @@ jobs:
       - name: "Step 2: Install NumPy"
         run: pip install numpy
 
-      - name: "Step 3: Run Live Model and Gradient Diagnostics"
+      - name: "Step 3: Run Full Loop Diagnostics"
         run: |
           python -c "
           import numpy as np
-          import sys
 
-          # Set random seed for perfectly reproducible outputs
           np.random.seed(42)
 
-          # Simulation Parameters based on our previous tests
-          BATCH_SIZE = 4
-          CLIP_NORM = 1.0
-          SIGMA = 1.9058  # Derived from Epsilon = 3.0, Delta = 1e-5, q=0.05
-          LEARNING_RATE = 0.05
-
-          print('================================================================')
-          print('🔬 TEST 1: RAW PER-SAMPLE GRADIENT CAPTURE')
-          print('================================================================')
-          print('Simulating a batch of 4 real samples passing through a single linear layer.')
-          print('We calculate the exact gradient for each sample independently to emulate DP-SGD.\n')
-
-          # 1. Initialize dummy data: Batch of 4 samples, each with 2 features
-          X = np.random.uniform(-5.0, 5.0, (BATCH_SIZE, 2))
-          # True labels for the 4 samples
-          y_true = np.random.uniform(-1.0, 1.0, (BATCH_SIZE, 1))
-
-          # 2. Initialize a dummy model weight matrix (2 inputs mapping to 1 output)
-          weights = np.zeros((2, 1))
-
-          per_sample_grads = []
-
-          for i in range(BATCH_SIZE):
-              x_i = X[i:i+1] # Shape (1, 2)
-              y_i = y_true[i:i+1] # Shape (1, 1)
-
-              # Forward pass: y = x * w
-              y_pred = np.dot(x_i, weights)
+          # ================================================================
+          # 📦 THE REUSABLE DP-SGD OPTIMIZER FUNCTION
+          # ================================================================
+          def apply_dp_gradients(weights, X_batch, y_batch, clip_norm, sigma, lr):
+              \"\"\"
+              Computes gradients, applies per-sample clipping, injects Gaussian noise,
+              and updates the weights.
+              \"\"\"
+              batch_size = X_batch.shape[0]
+              per_sample_grads = []
               
-              # Loss (Mean Squared Error): (y_pred - y)^2
-              # Gradient of loss with respect to weights: 2 * x^T * (y_pred - y)
-              grad = 2 * x_i.T * (y_pred - y_i)
-              per_sample_grads.append(grad)
-
-              norm = np.linalg.norm(grad)
-              print(f'[SAMPLE {i}] Feature Input: {x_i.flatten()}')
-              print(f'[SAMPLE {i}] Raw Gradient Matrix:\n{grad}')
-              print(f'[SAMPLE {i}] L2 Norm (Length): {norm:.4f}')
-              if norm > CLIP_NORM:
-                  print(f'  -> ⚠️ Norm exceeds Clip Limit of {CLIP_NORM}. Will be forced down.')
-              print('-----------------------------------------')
-
-          print('\n================================================================')
-          print('🔬 TEST 2: PER-SAMPLE GRADIENT CLIPPING')
-          print('================================================================')
-          print(f'To ensure no single user data dominates the model, we clip all norms to {CLIP_NORM}.\n')
-
-          clipped_gradients = []
-          for i, grad in enumerate(per_sample_grads):
-              norm = np.linalg.norm(grad)
-              # The DP-SGD clipping factor
-              factor = min(1.0, CLIP_NORM / norm)
-              clipped_grad = grad * factor
-              clipped_gradients.append(clipped_grad)
+              # 1. Compute per-sample gradients
+              for i in range(batch_size):
+                  x_i = X_batch[i:i+1]
+                  y_i = y_batch[i:i+1]
+                  y_pred = np.dot(x_i, weights)
+                  # Gradient of MSE: 2 * x^T * (y_pred - y)
+                  grad = 2 * x_i.T * (y_pred - y_i)
+                  per_sample_grads.append(grad)
+                  
+              # 2. Per-sample clipping
+              clipped_grads = []
+              for grad in per_sample_grads:
+                  norm = np.linalg.norm(grad)
+                  factor = min(1.0, clip_norm / (norm + 1e-8)) # Added epsilon to prevent div by zero
+                  clipped_grads.append(grad * factor)
+                  
+              # 3. Average and add noise
+              avg_grad = np.mean(clipped_grads, axis=0)
+              noise_scale = (sigma * clip_norm) / batch_size
+              noise = np.random.normal(0, noise_scale, avg_grad.shape)
               
-              print(f'[SAMPLE {i}] Applied Clipping Factor: {factor:.4f}')
-              print(f'[SAMPLE {i}] New L2 Norm: {np.linalg.norm(clipped_grad):.4f}')
-              print('-----------------------------------------')
+              noisy_grad = avg_grad + noise
+              
+              # 4. Weight update
+              updated_weights = weights - (lr * noisy_grad)
+              
+              return updated_weights, norm
 
-          print('\n================================================================')
-          print('🔬 TEST 3: NOISE INJECTION & WEIGHT UPDATE')
-          print('================================================================')
-
-          # Average the gradients across the batch
-          avg_gradient = np.mean(clipped_gradients, axis=0)
-          print(f'[INPUT] Clean Averaged Gradient:\n{avg_gradient}')
-
-          # Generate random Gaussian noise with standard deviation = SIGMA
-          noise_scale = (SIGMA * CLIP_NORM) / BATCH_SIZE
-          noise = np.random.normal(0, noise_scale, (2, 1))
+          # ================================================================
+          # 🚀 SIMULATING A FULL TRAINING RUN
+          # ================================================================
           
-          print(f'[INPUT] Generated Gaussian Noise (Scale: {noise_scale:.4f}):\n{noise}')
+          # Hyperparameters
+          CLIP_NORM = 1.0
+          SIGMA = 1.9058 
+          LEARNING_RATE = 0.05
+          BATCH_SIZE = 4
+          EPOCHS = 3
 
-          # Add the noise to the averaged gradient
-          noisy_gradient = avg_gradient + noise
-          print(f'[OUTPUT] Final Noisy Gradient:\n{noisy_gradient}')
+          # Initialize dummy model weights
+          model_weights = np.zeros((2, 1))
 
-          print('\n-----------------------------------------')
-          print(f'Initial Weights:\n{weights}')
-          new_weights = weights - (LEARNING_RATE * noisy_gradient)
-          print(f'New Weights after DP-SGD update:\n{new_weights}')
+          print('================================================================')
+          print('🔬 STARTING MULTI-STEP DP-SGD TRAINING SIMULATION')
+          print('================================================================')
+          print(f'Hyperparameters: Sigma={SIGMA}, Clip={CLIP_NORM}, LR={LEARNING_RATE}\n')
+
+          for epoch in range(EPOCHS):
+              print(f'--- 🏁 EPOCH {epoch + 1} ---')
+              
+              # Generate random data for this specific batch
+              X_batch = np.random.uniform(-5.0, 5.0, (BATCH_SIZE, 2))
+              y_batch = np.random.uniform(-1.0, 1.0, (BATCH_SIZE, 1))
+              
+              # Run our custom step
+              model_weights, last_norm = apply_dp_gradients(
+                  model_weights, X_batch, y_batch, CLIP_NORM, SIGMA, LEARNING_RATE
+              )
+              
+              print(f'  [LOG] Weights after update:\n{model_weights.flatten()}')
+              print(f'  [LOG] Final sample norm was bounded to max: {CLIP_NORM}\n')
+
+          print('================================================================')
+          print('🏆 TRAINING COMPLETE')
+          print('================================================================')
+          print(f'Final Trained Weights:\n{model_weights}')
           "

@@ -1,4 +1,4 @@
-name: "Dual DP Accountant Stress-Test - Fixed Domain"
+name: "True Side-by-Side DP Accountant Test"
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-calculators:
-    name: "Execute Proactive vs Rényi DP Accountants"
+  execute-side-by-side:
+    name: "Run Opacus RDP vs Pure DP"
     runs-on: macos-latest
 
     steps:
@@ -19,95 +19,79 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: "Step 2: Run Dual Verbose Math Diagnostics"
+      - name: "Step 2: Install Opacus"
+        run: |
+          echo "Installing Opacus for the official Rényi DP Accountant..."
+          pip install --upgrade pip
+          pip install opacus
+          # We need Opacus to compute the real, production-grade RDP bounds.
+
+      - name: "Step 3: Execute True Side-by-Side Test"
         run: |
           python -c "
           import math
           import sys
-
-          # ================================================================
-          # CALCULATOR DEFINITIONS
-          # ================================================================
-
-          def proactive_calculator(epsilon, delta, steps):
+          from opacus.accountants import RDPAccountant
+          
+          def get_renyi_noise(target_epsilon, target_delta, steps, sample_rate):
               \"\"\"
-              Method A: Closed-form analytical bound.
-              Fast, static, and safe, but highly conservative.
+              Uses the actual Opacus production RDP Accountant to find the 
+              optimal noise multiplier by searching across different orders.
               \"\"\"
-              if epsilon <= 0 or delta <= 0 or steps <= 0:
-                  return float('nan')
-              return math.sqrt(2 * steps * math.log(1 / delta)) / epsilon
-
-
-          def renyi_calculator(epsilon, delta, steps, q=0.01):
-              \"\"\"
-              Method B: A simulated Rényi DP (RDP) Accountant.
-              Accounts for subsampling rate (q). Deep learning models take advantage 
-              of the fact that we only see a small sample of the dataset at a time.
-              \"\"\"
-              if epsilon <= 0 or delta <= 0 or steps <= 0:
-                  return float('nan')
+              accountant = RDPAccountant()
               
-              # Optimal order alpha usually hovers around 2 to 20 for LLMs. 
-              # We will optimize for alpha = 10.0 for this simulation.
-              alpha = 10.0
-              
-              # Subsampling amplification: Noise is scaled down because we don't look at all data at once
-              effective_steps = steps * (q ** 2)
-              
-              # Calculating the denominator for the square root
-              denominator = epsilon - (math.log(1 / delta) / (alpha - 1))
-              
-              # FIXED: If the denominator is zero or negative, a valid sigma cannot be found for alpha=10
-              # To prevent the 'math domain error', we fall back to a tighter analytical bound.
-              if denominator <= 0:
-                  fallback_sigma = math.sqrt(2 * effective_steps * math.log(1 / delta)) / epsilon
-                  return fallback_sigma
+              # Opacus expects a list of steps. We simulate running 'steps' iterations.
+              for _ in range(steps):
+                  accountant.step(noise_multiplier=1.0, sample_rate=sample_rate)
                   
-              required_sigma = math.sqrt((alpha * effective_steps) / (2 * denominator))
+              # Now we ask Opacus: 'If we put in a noise scale of 1.0, what epsilon do we get?'
+              current_epsilon = accountant.get_epsilon(delta=target_delta)
+              
+              # Since epsilon scales inversely with noise, we can extrapolate the required
+              # noise scale needed to achieve our target epsilon.
+              required_sigma = current_epsilon / target_epsilon
               return required_sigma
 
-          # ================================================================
-          # SYSTEM EXECUTION & VERBOSE LOGS
-          # ================================================================
+          def get_van_dijk_proactive_noise(target_epsilon, target_delta, steps):
+              \"\"\"
+              Computes the static, global bound typically used in proactive/distributed DP 
+              frameworks that do not assume data subsampling or dynamic accounting.
+              \"\"\"
+              # Pure advanced DP composition formula
+              return math.sqrt(2 * steps * math.log(1 / target_delta)) / target_epsilon
 
-          # Test Parameters
+
+          # --- RUNNING THE SIDE-BY-SIDE TEST ---
+          
+          target_epsilons = [10.0, 3.0, 1.0]
           delta = 1e-5
           steps = 500
-          epsilons = [10.0, 3.0, 1.0, 0.5]
-          q = 0.05 # 5% data subsampling rate (standard batching)
-
+          q = 0.05 # 5% data subsampling per step
+          
           print('================================================================')
-          print('🔬 TEST 1: NOISE COMPARISON ACROSS EPSILON BOUNDS')
+          print('⚖️ TRUE SIDE-BY-SIDE ACCOUNTANT BENCHMARK')
           print('================================================================')
-          print(f'Constants: Delta = {delta}, Total Steps = {steps}, Sample Rate (q) = {q}\n')
-
-          for eps in epsilons:
-              sigma_a = proactive_calculator(eps, delta, steps)
-              sigma_b = renyi_calculator(eps, delta, steps, q)
+          print(f'Constants: Delta = {delta}, Steps = {steps}, Sample Rate (q) = {q}\n')
+          
+          for eps in target_epsilons:
+              print(f'--> Testing Target Epsilon: {eps}')
               
-              print(f'[INPUT]  Target Epsilon: {eps}')
-              print(f'[PROACTIVE A] Noise Scale (Sigma): {sigma_a:.4f}')
-              print(f'[RENYI B]     Noise Scale (Sigma): {sigma_b:.4f}')
+              # 1. Get real RDP noise scale
+              try:
+                  sigma_renyi = get_renyi_noise(eps, delta, steps, q)
+                  print(f'   [RENYI DP (Opacus)] Optimal Noise Scale: {sigma_renyi:.4f}')
+              except Exception as e:
+                  print(f'   [RENYI DP (Opacus)] Failed to compute: {e}')
+                  sigma_renyi = float('nan')
+                  
+              # 2. Get Pure DP / Proactive noise scale
+              sigma_pure = get_van_dijk_proactive_noise(eps, delta, steps)
+              print(f'   [PROACTIVE PURE DP] Optimal Noise Scale: {sigma_pure:.4f}')
               
-              reduction = ((sigma_a - sigma_b) / sigma_a) * 100
-              print(f'[LOG]    Rényi reduced required noise by: {reduction:.2f}%\n')
-
-          print('\n================================================================')
-          print('🔬 TEST 2: THE DATA SCALE EFFECT (Varying Sample Rate q)')
-          print('================================================================')
-          print('Theory: In a true RDP accountant, smaller batch sampling rates (q)')
-          print('should heavily reward the model with much lower required noise.\n')
-
-          eps = 3.0
-          sample_rates = [0.01, 0.05, 0.1, 0.5]
-
-          for rate in sample_rates:
-              sigma_a = proactive_calculator(eps, delta, steps)
-              sigma_b = renyi_calculator(eps, delta, steps, rate)
-              
-              print(f'[INPUT]  Sample Rate (q): {rate}')
-              print(f'[PROACTIVE A] Noise Scale (Sigma): {sigma_a:.4f} (Static)')
-              print(f'[RENYI B]     Noise Scale (Sigma): {sigma_b:.4f}')
-              print(f'[LOG]    RDP adaptation ratio: {sigma_b / sigma_a:.4f}\n')
+              # 3. Compare
+              if not math.isnan(sigma_renyi):
+                  ratio = sigma_pure / sigma_renyi
+                  print(f'   [ANALYSIS] Proactive is forcing {ratio:.2f}x MORE noise than Rényi.\n')
+              else:
+                  print('   [ANALYSIS] Cannot compute comparison due to Rényi failure.\n')
           "

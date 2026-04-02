@@ -1,4 +1,4 @@
-name: "True Side-by-Side DP Accountant Test"
+name: "Ultra-Verbose DP-SGD Model Execution Test"
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  execute-side-by-side:
-    name: "Run Opacus RDP vs Pure DP"
+  run-dpsgd-model:
+    name: "Validate Gradient Clipping and Noise on Actual Data"
     runs-on: macos-latest
 
     steps:
@@ -19,79 +19,97 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: "Step 2: Install Opacus"
-        run: |
-          echo "Installing Opacus for the official Rényi DP Accountant..."
-          pip install --upgrade pip
-          pip install opacus
-          # We need Opacus to compute the real, production-grade RDP bounds.
+      - name: "Step 2: Install NumPy"
+        run: pip install numpy
 
-      - name: "Step 3: Execute True Side-by-Side Test"
+      - name: "Step 3: Run Live Model and Gradient Diagnostics"
         run: |
           python -c "
-          import math
+          import numpy as np
           import sys
-          from opacus.accountants import RDPAccountant
-          
-          def get_renyi_noise(target_epsilon, target_delta, steps, sample_rate):
-              \"\"\"
-              Uses the actual Opacus production RDP Accountant to find the 
-              optimal noise multiplier by searching across different orders.
-              \"\"\"
-              accountant = RDPAccountant()
-              
-              # Opacus expects a list of steps. We simulate running 'steps' iterations.
-              for _ in range(steps):
-                  accountant.step(noise_multiplier=1.0, sample_rate=sample_rate)
-                  
-              # Now we ask Opacus: 'If we put in a noise scale of 1.0, what epsilon do we get?'
-              current_epsilon = accountant.get_epsilon(delta=target_delta)
-              
-              # Since epsilon scales inversely with noise, we can extrapolate the required
-              # noise scale needed to achieve our target epsilon.
-              required_sigma = current_epsilon / target_epsilon
-              return required_sigma
 
-          def get_van_dijk_proactive_noise(target_epsilon, target_delta, steps):
-              \"\"\"
-              Computes the static, global bound typically used in proactive/distributed DP 
-              frameworks that do not assume data subsampling or dynamic accounting.
-              \"\"\"
-              # Pure advanced DP composition formula
-              return math.sqrt(2 * steps * math.log(1 / target_delta)) / target_epsilon
+          # Set random seed for perfectly reproducible outputs
+          np.random.seed(42)
 
+          # Simulation Parameters based on our previous tests
+          BATCH_SIZE = 4
+          CLIP_NORM = 1.0
+          SIGMA = 1.9058  # Derived from Epsilon = 3.0, Delta = 1e-5, q=0.05
+          LEARNING_RATE = 0.05
 
-          # --- RUNNING THE SIDE-BY-SIDE TEST ---
-          
-          target_epsilons = [10.0, 3.0, 1.0]
-          delta = 1e-5
-          steps = 500
-          q = 0.05 # 5% data subsampling per step
-          
           print('================================================================')
-          print('⚖️ TRUE SIDE-BY-SIDE ACCOUNTANT BENCHMARK')
+          print('🔬 TEST 1: RAW PER-SAMPLE GRADIENT CAPTURE')
           print('================================================================')
-          print(f'Constants: Delta = {delta}, Steps = {steps}, Sample Rate (q) = {q}\n')
+          print('Simulating a batch of 4 real samples passing through a single linear layer.')
+          print('We calculate the exact gradient for each sample independently to emulate DP-SGD.\n')
+
+          # 1. Initialize dummy data: Batch of 4 samples, each with 2 features
+          X = np.random.uniform(-5.0, 5.0, (BATCH_SIZE, 2))
+          # True labels for the 4 samples
+          y_true = np.random.uniform(-1.0, 1.0, (BATCH_SIZE, 1))
+
+          # 2. Initialize a dummy model weight matrix (2 inputs mapping to 1 output)
+          weights = np.zeros((2, 1))
+
+          per_sample_grads = []
+
+          for i in range(BATCH_SIZE):
+              x_i = X[i:i+1] # Shape (1, 2)
+              y_i = y_true[i:i+1] # Shape (1, 1)
+
+              # Forward pass: y = x * w
+              y_pred = np.dot(x_i, weights)
+              
+              # Loss (Mean Squared Error): (y_pred - y)^2
+              # Gradient of loss with respect to weights: 2 * x^T * (y_pred - y)
+              grad = 2 * x_i.T * (y_pred - y_i)
+              per_sample_grads.append(grad)
+
+              norm = np.linalg.norm(grad)
+              print(f'[SAMPLE {i}] Feature Input: {x_i.flatten()}')
+              print(f'[SAMPLE {i}] Raw Gradient Matrix:\n{grad}')
+              print(f'[SAMPLE {i}] L2 Norm (Length): {norm:.4f}')
+              if norm > CLIP_NORM:
+                  print(f'  -> ⚠️ Norm exceeds Clip Limit of {CLIP_NORM}. Will be forced down.')
+              print('-----------------------------------------')
+
+          print('\n================================================================')
+          print('🔬 TEST 2: PER-SAMPLE GRADIENT CLIPPING')
+          print('================================================================')
+          print(f'To ensure no single user data dominates the model, we clip all norms to {CLIP_NORM}.\n')
+
+          clipped_gradients = []
+          for i, grad in enumerate(per_sample_grads):
+              norm = np.linalg.norm(grad)
+              # The DP-SGD clipping factor
+              factor = min(1.0, CLIP_NORM / norm)
+              clipped_grad = grad * factor
+              clipped_gradients.append(clipped_grad)
+              
+              print(f'[SAMPLE {i}] Applied Clipping Factor: {factor:.4f}')
+              print(f'[SAMPLE {i}] New L2 Norm: {np.linalg.norm(clipped_grad):.4f}')
+              print('-----------------------------------------')
+
+          print('\n================================================================')
+          print('🔬 TEST 3: NOISE INJECTION & WEIGHT UPDATE')
+          print('================================================================')
+
+          # Average the gradients across the batch
+          avg_gradient = np.mean(clipped_gradients, axis=0)
+          print(f'[INPUT] Clean Averaged Gradient:\n{avg_gradient}')
+
+          # Generate random Gaussian noise with standard deviation = SIGMA
+          noise_scale = (SIGMA * CLIP_NORM) / BATCH_SIZE
+          noise = np.random.normal(0, noise_scale, (2, 1))
           
-          for eps in target_epsilons:
-              print(f'--> Testing Target Epsilon: {eps}')
-              
-              # 1. Get real RDP noise scale
-              try:
-                  sigma_renyi = get_renyi_noise(eps, delta, steps, q)
-                  print(f'   [RENYI DP (Opacus)] Optimal Noise Scale: {sigma_renyi:.4f}')
-              except Exception as e:
-                  print(f'   [RENYI DP (Opacus)] Failed to compute: {e}')
-                  sigma_renyi = float('nan')
-                  
-              # 2. Get Pure DP / Proactive noise scale
-              sigma_pure = get_van_dijk_proactive_noise(eps, delta, steps)
-              print(f'   [PROACTIVE PURE DP] Optimal Noise Scale: {sigma_pure:.4f}')
-              
-              # 3. Compare
-              if not math.isnan(sigma_renyi):
-                  ratio = sigma_pure / sigma_renyi
-                  print(f'   [ANALYSIS] Proactive is forcing {ratio:.2f}x MORE noise than Rényi.\n')
-              else:
-                  print('   [ANALYSIS] Cannot compute comparison due to Rényi failure.\n')
+          print(f'[INPUT] Generated Gaussian Noise (Scale: {noise_scale:.4f}):\n{noise}')
+
+          # Add the noise to the averaged gradient
+          noisy_gradient = avg_gradient + noise
+          print(f'[OUTPUT] Final Noisy Gradient:\n{noisy_gradient}')
+
+          print('\n-----------------------------------------')
+          print(f'Initial Weights:\n{weights}')
+          new_weights = weights - (LEARNING_RATE * noisy_gradient)
+          print(f'New Weights after DP-SGD update:\n{new_weights}')
           "

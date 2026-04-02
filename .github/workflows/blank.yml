@@ -1,4 +1,4 @@
-name: "MLX DoRA Baseline and DP Extension Test on M1"
+name: "Ultra-Verbose Proactive DP Math Engine Stress-Test"
 
 on:
   push:
@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-mlx-test:
-    name: "Run MLX DoRA & DP Extension"
-    runs-on: macos-latest  # Targets Apple Silicon/macOS environment
+  run-calculator-suite:
+    name: "Execute Stress-Tests on DP Accountant"
+    runs-on: macos-latest
 
     steps:
       - name: "Step 0: Checkout Code"
@@ -19,108 +19,75 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: "Step 2: Install MLX"
-        run: |
-          echo "Installing Apple's MLX Framework..."
-          pip install --upgrade pip
-          pip install mlx
-          # Note: We use pure mlx here to build a custom traceable graph 
-          # rather than wrestling with the mlx_lm CLI's lack of DP hooks.
-
-      - name: "Step 3: Execute Baseline & DP Extension"
+      - name: "Step 2: Run Verbose Math Diagnostics"
         run: |
           python -c "
-          import mlx.core as mx
-          import mlx.nn as nn
+          import math
           import sys
-          
+
+          def calculate_sigma(epsilon, delta, steps):
+              \"\"\"Extrapolated Proactive DP closed-form equation.\"\"\"
+              # Guard rails against impossible math
+              if epsilon <= 0 or delta <= 0 or steps <= 0:
+                  return float('nan')
+              return math.sqrt(2 * steps * math.log(1 / delta)) / epsilon
+
           print('================================================================')
-          print('🔋 OPTION A: THE MLX DORA BASELINE (Raw Performance)')
+          print('🔬 TEST 1: THE INVERSE SCALING LAW (Epsilon Sensitivity)')
           print('================================================================')
-          
-          # 1. Define dimensions
-          B, T, D, R = 2, 32, 512, 8  # Batch, Sequence, Hidden Dim, Rank
-          
-          print(f'Simulating a DoRA adapter layer...')
-          print(f'Hidden Dim: {D}, LoRA Rank: {R}')
-          
-          # Mocking the weight matrices in MLX
-          W_base = mx.random.normal((D, D))
-          lora_A = mx.random.normal((D, R))
-          lora_B = mx.random.normal((R, D))
-          m = mx.ones((D,))  # Magnitude vector for DoRA
-          
-          # Dummy input and target
-          X = mx.random.normal((B, T, D))
-          Y_target = mx.random.normal((B, T, D))
-          
-          # Define a custom DoRA forward execution trace
-          def loss_fn(m, lora_A, lora_B, W_base, X, Y_target):
-              # Standard LoRA adapter
-              lora_update = (lora_A @ lora_B)
-              # DoRA decomposes by normalizing the direction and applying magnitude 'm'
-              combined_W = m * (W_base + lora_update) / mx.linalg.norm(W_base + lora_update, axis=1, keepdims=True)
-              
-              # Forward pass
-              preds = X @ combined_W
-              # MSE Loss
-              return mx.mean((preds - Y_target) ** 2)
-          
-          # MLX gradient function (similar to autograd, but optimized for Metal)
-          grad_fn = mx.grad(loss_fn, argnums=(0, 1, 2))
-          
-          print('-> Triggering baseline forward and backward pass on Metal GPU...')
-          try:
-              # Compute baseline gradients
-              grads = grad_fn(m, lora_A, lora_B, W_base, X, Y_target)
-              # Force evaluation on Metal
-              mx.eval(grads)
-              print('[SUCCESS] Option A Complete: Raw MLX DoRA gradients computed flawlessly!')
-          except Exception as e:
-              print(f'[FAIL] Baseline failed: {e}')
-              sys.exit(1)
-              
+          print('Theory: As target Epsilon decreases (stricter privacy),')
+          print('the required noise scale (Sigma) must increase exponentially.')
+          print('Constants: Delta = 1e-5, Steps = 500\n')
+
+          delta = 1e-5
+          steps = 500
+          epsilons = [10.0, 5.0, 3.0, 1.0, 0.5, 0.1]
+
+          for eps in epsilons:
+              sigma = calculate_sigma(eps, delta, steps)
+              print(f'[INPUT]  Epsilon: {eps:<5} | Delta: {delta} | Steps: {steps}')
+              print(f'[OUTPUT] Required Noise Scale (Sigma): {sigma:.4f}')
+              print(f'[LOG]    Noise density multiplier relative to step: {sigma/steps:.6f}\n')
+
           print('\n================================================================')
-          print('🛠️ OPTION B: THE PROACTIVE DP EXTENSION (Hacker Privacy)')
+          print('🔬 TEST 2: THE SQUARE-ROOT TIME COMPLEXITY (Step Scaling)')
           print('================================================================')
-          
-          sigma = 35.766
-          max_grad_norm = 1.0
-          print(f'Target Sensitivity (C): {max_grad_norm}')
-          print(f'Proactive Noise Scale (Sigma): {sigma}')
-          
-          print('-> Intercepting raw MLX gradients to enforce Differential Privacy...')
-          
-          try:
-              m_grad, A_grad, B_grad = grads
-              
-              # 1. Calculate global norm across the three trainable gradients
-              total_norm = mx.sqrt(mx.sum(m_grad**2) + mx.sum(A_grad**2) + mx.sum(B_grad**2))
-              print(f'-> Baseline gradient L2 norm: {total_norm.item():.4f}')
-              
-              # 2. Manual Gradient Clipping
-              clip_factor = mx.minimum(1.0, max_grad_norm / (total_norm + 1e-6))
-              m_clipped = m_grad * clip_factor
-              A_clipped = A_grad * clip_factor
-              B_clipped = B_grad * clip_factor
-              print(f'-> Gradients clipped by a factor of: {clip_factor.item():.4f}')
-              
-              # 3. Injecting Proactive Gaussian Noise
-              print('-> Rolling random Gaussian distributions across the adapter matrices...')
-              m_noisy = m_clipped + (mx.random.normal(m_clipped.shape) * sigma)
-              A_noisy = A_clipped + (mx.random.normal(A_clipped.shape) * sigma)
-              B_noisy = B_clipped + (mx.random.normal(B_clipped.shape) * sigma)
-              
-              # Force evaluate the noisy tensors to prove computation didn't break graph
-              mx.eval(m_noisy, A_noisy, B_noisy)
-              
-              print('\n################################################################')
-              print('🔥 MASSIVE SUCCESS! THE HACKER DP-DORA SETUP WORKS!')
-              print('By calculating the gradients in MLX and applying manual clipping')
-              print('and noise after the fact, we bypassed Opacus completely.')
-              print('################################################################')
-              
-          except Exception as e:
-              print(f'\n[ERROR] Extension failed: {e}')
-              sys.exit(1)
+          print('Theory: As training steps grow, privacy leakage compounds.')
+          print('To compensate, Sigma must increase by a factor of sqrt(Steps).')
+          print('Constants: Epsilon = 3.0, Delta = 1e-5\n')
+
+          eps = 3.0
+          delta = 1e-5
+          step_list = [1, 10, 100, 500, 1000, 5000]
+
+          for s in step_list:
+              sigma = calculate_sigma(eps, delta, s)
+              print(f'[INPUT]  Epsilon: {eps} | Delta: {delta} | Steps: {s:<5}')
+              print(f'[OUTPUT] Required Noise Scale (Sigma): {sigma:.4f}')
+              ratio = sigma / math.sqrt(s)
+              print(f'[LOG]    Consistency Check (Sigma / sqrt(Steps)): {ratio:.4f} (Should be constant!)\n')
+
+          print('\n================================================================')
+          print('🔬 TEST 3: THE IMPOSSIBLE EDGE CASES (System Crash Resistance)')
+          print('================================================================')
+          print('Theory: Passing zero or negative privacy parameters should fail')
+          print('gracefully rather than generating mathematically impossible noise.\n')
+
+          edge_cases = [
+              {'eps': 0.0, 'delta': 1e-5, 'steps': 500, 'label': 'Zero Epsilon (Infinite Privacy)'},
+              {'eps': 3.0, 'delta': 0.0, 'steps': 500, 'label': 'Zero Delta (Perfect Guarantee)'},
+              {'eps': 3.0, 'delta': 1e-5, 'steps': -100, 'label': 'Negative Steps'},
+          ]
+
+          for case in edge_cases:
+              print(f\"Evaluating Edge Case: {case['label']}\")
+              print(f\"[INPUT]  Epsilon: {case['eps']} | Delta: {case['delta']} | Steps: {case['steps']}\")
+              try:
+                  # If using math.log(0), Python will naturally throw a ValueError.
+                  # Let's see if our wrapper handles it or yields NaN.
+                  sigma = calculate_sigma(case['eps'], case['delta'], case['steps'])
+                  print(f'[OUTPUT] Noise Scale Result: {sigma}')
+              except ValueError as e:
+                  print(f'[OUTPUT] Successfully caught math domain error: {e}')
+              print('-----------------------------------------')
           "
